@@ -40,6 +40,18 @@ const calculateWorkedHours = (startTime, finishTime) => {
 const formatHours = (hours) => Number(hours || 0).toFixed(1)
 const formatMoney = (value) => `$${Number(value || 0).toFixed(2)}`
 
+const formatBrisbaneTime = (iso) => {
+  if (!iso) return '—'
+  try {
+    const d = new Date(iso)
+    return d.toLocaleString('en-AU', {
+      timeZone: 'Australia/Brisbane',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+      day: '2-digit', month: 'short',
+    })
+  } catch { return '—' }
+}
+
 // ── API client ─────────────────────────────────────────────────────────────
 const apiToken = () => sessionStorage.getItem('st.token') || ''
 const apiFetch = (url, opts = {}) =>
@@ -76,6 +88,9 @@ const state = {
   editingUserId: '',
   kpiDraft: createKpiDraft(),
   chartMode: 'by-driver',
+  selectedKpiId: '',
+  selectedAlertId: '',
+  detailReturnView: 'supervisor',
 }
 
 // ── Live tracking ──────────────────────────────────────────────────────────
@@ -145,6 +160,8 @@ const drivers = () => state.data.users.filter(u => u.role === 'driver' && u.stat
 const supervisors = () => state.data.users.filter(u => u.role === 'supervisor' && u.status === 'active')
 const routeById = (id) => state.data.routes.find(r => r.id === id)
 const userById = (id) => state.data.users.find(u => u.id === id)
+const kpiById = (id) => state.data.kpiSubmissions.find(k => k.id === id)
+const alertById = (id) => state.data.alerts.find(a => a.id === id)
 const tollConfig = () => Array.isArray(state.data.settings?.tolls) && state.data.settings.tolls.length
   ? state.data.settings.tolls
   : BRISBANE_TOLLS
@@ -565,6 +582,11 @@ const kpiView = () => {
             ${radio('radioRoomNotified', 'yes', 'Yes')}
             ${radio('radioRoomNotified', 'no', 'No')}
           </div>
+          <label class="field is-hidden" data-radio-reason-field>
+            <span>Reason for not notifying Radio Room</span>
+            <textarea class="textarea" name="radioRoomReason" placeholder="Explain why you took a 30-minute break without Radio Room approval"></textarea>
+            <small class="hint">This will be sent to your supervisor for review.</small>
+          </label>
         </div>
         <div class="grid-2">
           ${stepperField('stops', 'Stops', 0, 0, 1)}
@@ -717,19 +739,19 @@ const supervisorAlertBoard = (m) => {
   const radioRoomAlerts = state.data.alerts.filter(a => a.type === 'radio-room' && a.status === 'pending')
   return `
     <section class="panel panel-pad stack">
-      <div class="view-title"><h3>Alert board</h3><p>Items needing attention today.</p></div>
+      <div class="view-title"><h3>Alert board</h3><p>Click an alert to review details.</p></div>
       <div class="alert-list">
         ${radioRoomAlerts.map(a => {
+          const isCritical = a.notified === false || a.severity === 'critical'
           const driver = userById(a.driverId)
+          const name = a.driverName || (driver ? formatName(driver) : 'Driver')
           return `
-            <article class="alert-item alert-warning radio-room-alert">
-              <strong>Radio Room: 30-min break</strong>
-              <span>${h(driver ? formatName(driver) : 'Driver')} — ${h(a.message)}</span>
-              <div class="row-actions" style="margin-top:6px">
-                <button class="mini-button approve" data-action="alert-approve" data-id="${h(a.id)}">Approve</button>
-                <button class="mini-button reject" data-action="alert-dismiss" data-id="${h(a.id)}">Dismiss</button>
-              </div>
-            </article>
+            <button class="alert-item alert-${isCritical ? 'critical' : 'warning'} radio-room-alert alert-clickable" data-action="view-alert" data-id="${h(a.id)}">
+              <strong>${isCritical ? '⚠ 30-min break — NO Radio Room approval' : 'Radio Room — 30-min break'}</strong>
+              <span><b>${h(name)}</b> · ${h(a.date || '')} · submitted ${h(formatBrisbaneTime(a.createdAt))}</span>
+              ${a.reason ? `<span class="alert-reason">Reason: ${h(a.reason)}</span>` : ''}
+              <span class="alert-tap-hint">Tap to review →</span>
+            </button>
           `
         }).join('')}
         ${systemAlerts.length
@@ -909,14 +931,16 @@ const trendSvg = () => {
   `
 }
 
-const driverTable = (rows, { showTolls = true } = {}) => `
+const driverTable = (rows, { showTolls = true } = {}) => {
+  const colspan = 6 + (showTolls ? 1 : 0) + 1 // base + tolls + action
+  return `
   <section class="panel panel-pad stack">
     <div class="view-title"><h3>Driver submissions</h3><p>Status and route details for selected filters.</p></div>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>Driver</th><th>Route</th><th>Hours</th><th>Stops</th><th>Parcels</th>${showTolls ? '<th>Tolls</th>' : ''}<th>Status</th>
+            <th>Driver</th><th>Route</th><th>Submitted</th><th>Hours</th><th>Stops</th><th>Parcels</th>${showTolls ? '<th>Tolls</th>' : ''}<th></th>
           </tr>
         </thead>
         <tbody>
@@ -926,20 +950,22 @@ const driverTable = (rows, { showTolls = true } = {}) => `
                 return `<tr>
                   <td>${h(driver ? formatName(driver) : 'Unknown')}</td>
                   <td>${h(routeById(item.routeId)?.routeNumber || 'No route')}</td>
+                  <td>${h(formatBrisbaneTime(item.updatedAt || item.createdAt))}</td>
                   <td>${h(item.hours)}</td>
                   <td>${h(item.stops)}</td>
                   <td>${h(item.parcels)}</td>
                   ${showTolls ? `<td>${h(formatMoney(item.tollTotal || tollTotal(item.tolls)))}</td>` : ''}
-                  <td><span class="status submitted">${h(item.status)}</span></td>
+                  <td><button class="mini-button" data-action="view-kpi" data-id="${h(item.id)}">View</button></td>
                 </tr>`
               }).join('')
-            : `<tr><td colspan="${showTolls ? 7 : 6}">No KPI submissions for this filter.</td></tr>`
+            : `<tr><td colspan="${colspan}">No KPI submissions for this filter.</td></tr>`
           }
         </tbody>
       </table>
     </div>
   </section>
 `
+}
 
 const pendingDriversPanel = (m) => {
   const submittedIds = new Set(m.filtered.map(k => k.driverId))
@@ -1211,6 +1237,153 @@ const adminSettings = () => `
   </form>
 `
 
+// ── KPI detail view ────────────────────────────────────────────────────────
+const detailRow = (label, value) => `
+  <div class="detail-row">
+    <span class="detail-label">${h(label)}</span>
+    <span class="detail-value">${h(value || '—')}</span>
+  </div>
+`
+
+const kpiDetailView = () => {
+  const kpi = kpiById(state.selectedKpiId)
+  if (!kpi) {
+    return `${header()}<main class="shell"><div class="empty">KPI not found.</div><button class="ghost-button" data-action="back-to-supervisor" style="margin-top:14px">← Back</button></main>`
+  }
+  const driver = userById(kpi.driverId)
+  const supervisor = userById(kpi.supervisorId)
+  const route = routeById(kpi.routeId)
+  const isAdmin = currentUser()?.role === 'admin'
+  const tolls = normalizeTollList(kpi.tolls)
+  return `
+    ${header()}
+    <main class="shell driver-shell">
+      <section class="view-head">
+        <div class="view-title">
+          <p class="eyebrow">KPI · ${h(kpi.date)}</p>
+          <h2>${h(driver ? formatName(driver) : kpi.driverName || 'Unknown driver')}</h2>
+          <p>Submitted ${h(formatBrisbaneTime(kpi.updatedAt || kpi.createdAt))}${kpi.updatedAt && kpi.updatedAt !== kpi.createdAt ? ` · originally ${h(formatBrisbaneTime(kpi.createdAt))}` : ''}</p>
+        </div>
+        <div class="toolbar">
+          <button class="ghost-button" data-action="back-to-supervisor">← Back</button>
+        </div>
+      </section>
+      <section class="panel panel-pad stack">
+        <div class="view-title"><h3>Run details</h3></div>
+        <div class="detail-grid">
+          ${detailRow('Date', kpi.date)}
+          ${detailRow('Driver type', kpi.driverType)}
+          ${detailRow('Route', route?.routeNumber || kpi.routeId)}
+          ${detailRow('Supervisor', supervisor ? formatName(supervisor) : kpi.supervisorId)}
+          ${detailRow('Start time', kpi.startTime)}
+          ${detailRow('Finish time', kpi.finishTime)}
+          ${detailRow('Total hours', Number(kpi.hours || 0).toFixed(2))}
+          ${detailRow('Break', `${kpi.breakMinutes} min`)}
+          ${detailRow('Radio Room notified', kpi.radioRoomNotified || '—')}
+          ${kpi.radioRoomReason ? detailRow('Radio Room reason', kpi.radioRoomReason) : ''}
+          ${detailRow('Off-road duties', kpi.offroadDuties ? 'Yes' : 'No')}
+          ${kpi.offroadNotes ? detailRow('Off-road notes', kpi.offroadNotes) : ''}
+          ${detailRow('Stops', kpi.stops)}
+          ${detailRow('Parcels', kpi.parcels)}
+          ${isAdmin ? detailRow('Tolls total', formatMoney(kpi.tollTotal || 0)) : ''}
+        </div>
+        ${isAdmin && tolls.length ? `
+          <div class="view-title" style="margin-top:8px"><h3>Tolls</h3></div>
+          <div class="toll-list">${tolls.map(t => `
+            <article class="toll-row">
+              <div><strong>${h(t.name)}</strong><span>${h(t.quantity)} × ${h(formatMoney(t.price))}</span></div>
+              <div class="toll-row-end"><strong>${h(formatMoney(t.total))}</strong></div>
+            </article>
+          `).join('')}</div>
+        ` : ''}
+        ${kpi.incidents ? `
+          <div class="detail-block">
+            <h4>Incidents</h4>
+            <p>${h(kpi.incidents)}</p>
+          </div>
+        ` : ''}
+        ${kpi.comments ? `
+          <div class="detail-block">
+            <h4>Comments</h4>
+            <p>${h(kpi.comments)}</p>
+          </div>
+        ` : ''}
+      </section>
+    </main>
+  `
+}
+
+// ── Alert detail view ──────────────────────────────────────────────────────
+const alertDetailView = () => {
+  const alert = alertById(state.selectedAlertId)
+  if (!alert) {
+    return `${header()}<main class="shell"><div class="empty">Alert not found.</div><button class="ghost-button" data-action="back-to-supervisor" style="margin-top:14px">← Back</button></main>`
+  }
+  const kpi = kpiById(alert.kpiId)
+  const driver = userById(alert.driverId)
+  const supervisor = kpi ? userById(kpi.supervisorId) : null
+  const route = kpi ? routeById(kpi.routeId) : null
+  const isCritical = alert.notified === false || alert.severity === 'critical'
+  const isPending = alert.status === 'pending'
+  return `
+    ${header()}
+    <main class="shell driver-shell">
+      <section class="view-head">
+        <div class="view-title">
+          <p class="eyebrow">Alert · ${h(alert.type)}</p>
+          <h2>${isCritical ? '⚠ 30-min break — NO approval' : '30-min break — notified'}</h2>
+          <p>Submitted ${h(formatBrisbaneTime(alert.createdAt))} · Status: <strong>${h(alert.status)}</strong></p>
+        </div>
+        <div class="toolbar">
+          <button class="ghost-button" data-action="back-to-supervisor">← Back</button>
+        </div>
+      </section>
+
+      <section class="panel panel-pad stack">
+        <div class="view-title"><h3>Driver report</h3></div>
+        <div class="detail-grid">
+          ${detailRow('Driver', alert.driverName || (driver ? formatName(driver) : '—'))}
+          ${detailRow('Date', alert.date || kpi?.date)}
+          ${detailRow('Radio Room notified', alert.notified ? 'Yes' : 'No')}
+          ${alert.reason ? detailRow('Reason given', alert.reason) : ''}
+        </div>
+      </section>
+
+      ${kpi ? `
+        <section class="panel panel-pad stack">
+          <div class="view-title"><h3>Linked KPI</h3><p>Run submitted by the driver.</p></div>
+          <div class="detail-grid">
+            ${detailRow('Route', route?.routeNumber || kpi.routeId)}
+            ${detailRow('Supervisor', supervisor ? formatName(supervisor) : kpi.supervisorId)}
+            ${detailRow('Start time', kpi.startTime)}
+            ${detailRow('Finish time', kpi.finishTime)}
+            ${detailRow('Total hours', Number(kpi.hours || 0).toFixed(2))}
+            ${detailRow('Break', `${kpi.breakMinutes} min`)}
+            ${detailRow('Stops', kpi.stops)}
+            ${detailRow('Parcels', kpi.parcels)}
+          </div>
+          ${kpi.incidents ? `<div class="detail-block"><h4>Incidents</h4><p>${h(kpi.incidents)}</p></div>` : ''}
+          ${kpi.comments ? `<div class="detail-block"><h4>Comments</h4><p>${h(kpi.comments)}</p></div>` : ''}
+        </section>
+      ` : '<section class="panel panel-pad"><div class="empty">Linked KPI no longer available.</div></section>'}
+
+      ${isPending ? `
+        <section class="panel panel-pad stack">
+          <div class="view-title"><h3>Supervisor decision</h3><p>Approve if break was justified, reject if it was not.</p></div>
+          <div class="row-actions">
+            <button class="button" data-action="alert-decide" data-id="${h(alert.id)}" data-status="approved">Approve</button>
+            <button class="danger-button" data-action="alert-decide" data-id="${h(alert.id)}" data-status="rejected">Reject</button>
+          </div>
+        </section>
+      ` : `
+        <section class="panel panel-pad">
+          <div class="empty">Alert already ${h(alert.status)} by supervisor.</div>
+        </section>
+      `}
+    </main>
+  `
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────
 const render = () => {
   const user = currentUser()
@@ -1222,6 +1395,8 @@ const render = () => {
   else if (state.view === 'sick-leave') html = user?.role === 'driver' ? sickLeaveView() : loginView()
   else if (state.view === 'supervisor') html = user?.role === 'supervisor' || user?.role === 'admin' ? supervisorDashboard() : loginView()
   else if (state.view === 'admin') html = user?.role === 'admin' ? adminView() : loginView()
+  else if (state.view === 'kpi-detail') html = (user?.role === 'supervisor' || user?.role === 'admin') ? kpiDetailView() : loginView()
+  else if (state.view === 'alert-detail') html = (user?.role === 'supervisor' || user?.role === 'admin') ? alertDetailView() : loginView()
   else html = user?.role === 'driver' ? driverDashboard() : homeView()
   app.innerHTML = `${html}${state.toast ? `<div class="toast">${h(state.toast)}</div>` : ''}`
 }
@@ -1235,9 +1410,15 @@ const validateKpi = (data) => {
   if (!data.supervisorId) errors.push('Supervisor is required.')
   if (!data.startTime || !data.finishTime) errors.push('Start and finish time are required.')
   if (calculateWorkedHours(data.startTime, data.finishTime) <= 0) errors.push('Total hours must be greater than zero.')
+  if (!(Number(data.stops) > 0)) errors.push('Stops must be greater than zero.')
+  if (!(Number(data.parcels) > 0)) errors.push('Parcels must be greater than zero.')
   if (data.hasTolls === 'yes' && !state.kpiDraft.tolls.length) errors.push('Add at least one toll or choose No.')
-  if (Number(data.breakMinutes) === 30 && !['yes', 'no'].includes(data.radioRoomNotified))
-    errors.push('Please confirm whether you notified Radio Room.')
+  if (Number(data.breakMinutes) === 30) {
+    if (!['yes', 'no'].includes(data.radioRoomNotified))
+      errors.push('Please confirm whether you notified Radio Room.')
+    if (data.radioRoomNotified === 'no' && !String(data.radioRoomReason || '').trim())
+      errors.push('Please provide a reason for not notifying Radio Room.')
+  }
   return errors
 }
 
@@ -1305,7 +1486,8 @@ const handleKpi = async (form) => {
     finishTime: data.finishTime,
     hours,
     breakMinutes: Number(data.breakMinutes),
-    breakApprovedBy: data.breakApprovedBy,
+    radioRoomNotified: data.radioRoomNotified || '',
+    radioRoomReason: data.radioRoomReason || '',
     offroadDuties: data.offroadDuties === 'yes',
     offroadNotes: data.offroadNotes,
     stops: Number(data.stops),
@@ -1329,13 +1511,21 @@ const handleKpi = async (form) => {
   // Replace any prior same-date submission for this driver in local cache (server already upserted)
   state.data.kpiSubmissions = [kpi, ...state.data.kpiSubmissions.filter(k => !(k.driverId === kpi.driverId && k.date === kpi.date))]
 
-  if (Number(data.breakMinutes) === 30 && data.radioRoomNotified === 'yes') {
+  if (Number(data.breakMinutes) === 30) {
     const user = currentUser()
+    const notified = data.radioRoomNotified === 'yes'
     await api.post('/api/alerts', {
       type: 'radio-room',
+      severity: notified ? 'info' : 'critical',
       driverId: user.id,
+      driverName: formatName(user),
       kpiId: kpi.id,
-      message: `${formatName(user)} notified Radio Room for 30-min break on ${data.date}`,
+      date: data.date,
+      notified,
+      reason: notified ? '' : (data.radioRoomReason || ''),
+      message: notified
+        ? `${formatName(user)} notified Radio Room for 30-min break on ${data.date}`
+        : `${formatName(user)} took 30-min break WITHOUT Radio Room approval on ${data.date}`,
       status: 'pending',
     }).catch(() => {})
   }
@@ -1509,6 +1699,12 @@ app.addEventListener('change', (event) => {
     state.kpiDraft.breakMinutes = is30 ? 30 : 60
     const box = event.target.form?.querySelector('[data-radio-room-box]')
     if (box) box.classList.toggle('is-hidden', !is30)
+    const reasonField = event.target.form?.querySelector('[data-radio-reason-field]')
+    if (reasonField && !is30) reasonField.classList.add('is-hidden')
+  }
+  if (event.target.name === 'radioRoomNotified') {
+    const reasonField = event.target.form?.querySelector('[data-radio-reason-field]')
+    if (reasonField) reasonField.classList.toggle('is-hidden', event.target.value !== 'no')
   }
 })
 
@@ -1570,6 +1766,21 @@ app.addEventListener('click', async (event) => {
   if (action === 'holiday-reject') await updateHolidayStatus(target.dataset.id, 'rejected')
   if (action === 'alert-approve') await updateAlertStatus(target.dataset.id, 'approved')
   if (action === 'alert-dismiss') await updateAlertStatus(target.dataset.id, 'dismissed')
+  if (action === 'view-kpi') {
+    state.selectedKpiId = target.dataset.id
+    state.detailReturnView = currentUser()?.role === 'admin' ? 'admin' : 'supervisor'
+    setView('kpi-detail')
+  }
+  if (action === 'view-alert') {
+    state.selectedAlertId = target.dataset.id
+    state.detailReturnView = currentUser()?.role === 'admin' ? 'admin' : 'supervisor'
+    setView('alert-detail')
+  }
+  if (action === 'back-to-supervisor') setView(state.detailReturnView || 'supervisor')
+  if (action === 'alert-decide') {
+    await updateAlertStatus(target.dataset.id, target.dataset.status)
+    setView(state.detailReturnView || 'supervisor')
+  }
   if (action === 'export-json') exportJson()
   if (action === 'export-csv') exportCsv()
 

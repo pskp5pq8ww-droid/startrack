@@ -354,6 +354,7 @@ http.createServer(async (req, res) => {
       hours,
       breakMinutes: Number(body.breakMinutes || 60),
       radioRoomNotified: body.radioRoomNotified || '',
+      radioRoomReason: sanitize(body.radioRoomReason || ''),
       offroadDuties: !!body.offroadDuties,
       offroadNotes: sanitize(body.offroadNotes || ''),
       stops: Math.max(0, Number(body.stops || 0)),
