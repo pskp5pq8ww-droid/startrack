@@ -21,7 +21,9 @@ The prototype stores these entities in localStorage:
 - `holiday_requests`
 - `routes`
 - `daily_metrics` derived from submissions
-- `settings`
+- `settings`, including editable Brisbane toll pricing
+
+KPI submissions calculate worked hours from start/finish time and can store toll selections with quantity, unit price, and subtotal for Excel/CSV export.
 
 `schema.sql` contains a backend-ready relational schema using the same entity names.
 

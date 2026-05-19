@@ -11,6 +11,35 @@ const h = (value = '') =>
     .replaceAll('"', '&quot;').replaceAll("'", '&#039;')
 const formatName = (user) => `${user.firstName} ${user.lastName}`
 
+const BRISBANE_TOLLS = [
+  { id: 'gateway', name: 'Gateway Motorway / Gateway Bridge', price: 0 },
+  { id: 'go-between', name: 'Go Between Bridge', price: 0 },
+  { id: 'clem7', name: 'Clem7 Tunnel', price: 0 },
+  { id: 'airportlinkm7', name: 'AirportlinkM7', price: 0 },
+  { id: 'legacy-way', name: 'Legacy Way', price: 0 },
+  { id: 'logan-motorway', name: 'Logan Motorway', price: 0 },
+  { id: 'toowoomba-bypass', name: 'Toowoomba Bypass', price: 0 },
+]
+
+const createKpiDraft = () => ({ hasTolls: false, tolls: [] })
+
+const parseTimeToMinutes = (time = '') => {
+  const [hours, minutes] = String(time).split(':').map(Number)
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null
+  return hours * 60 + minutes
+}
+
+const calculateWorkedHours = (startTime, finishTime) => {
+  const start = parseTimeToMinutes(startTime)
+  let finish = parseTimeToMinutes(finishTime)
+  if (start === null || finish === null) return 0
+  if (finish < start) finish += 24 * 60
+  return Math.round(((finish - start) / 60) * 100) / 100
+}
+
+const formatHours = (hours) => Number(hours || 0).toFixed(1)
+const formatMoney = (value) => `$${Number(value || 0).toFixed(2)}`
+
 // ── API client ─────────────────────────────────────────────────────────────
 const apiToken = () => sessionStorage.getItem('st.token') || ''
 const apiFetch = (url, opts = {}) =>
@@ -43,6 +72,67 @@ const state = {
   filters: { date: todayISO(), driverId: 'all', routeId: 'all' },
   adminTab: 'users',
   editingUserId: '',
+  kpiDraft: createKpiDraft(),
+}
+
+// ── Live tracking ──────────────────────────────────────────────────────────
+const notifications = []
+let prevKpiCount = 0
+let prevHolidayCount = 0
+let clockTimer = null
+
+const brisbaneClock = () => new Date().toLocaleTimeString('en-AU', {
+  timeZone: 'Australia/Brisbane',
+  hour12: false,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+})
+
+const brisbaneDate = () => new Date().toLocaleDateString('en-AU', {
+  timeZone: 'Australia/Brisbane',
+  weekday: 'short',
+  day: 'numeric',
+  month: 'short',
+})
+
+function startClock() {
+  if (clockTimer) return
+  clockTimer = setInterval(() => {
+    const el = document.getElementById('brisbane-clock')
+    if (!el) { clearInterval(clockTimer); clockTimer = null; return }
+    el.textContent = brisbaneClock()
+  }, 1000)
+}
+
+function stopClock() {
+  if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
+}
+
+function pushNotification(message, type = 'info') {
+  const time = brisbaneClock()
+  notifications.unshift({ id: Date.now(), message, time, type })
+  if (notifications.length > 8) notifications.pop()
+  const bar = document.getElementById('notif-list')
+  if (bar) bar.innerHTML = renderNotifList()
+}
+
+function renderNotifList() {
+  if (!notifications.length) return `<span class="notif-empty">No new activity</span>`
+  return notifications.map(n => `
+    <div class="notif-item notif-${h(n.type)}">
+      <span class="notif-time">${h(n.time)}</span>
+      <span class="notif-msg">${h(n.message)}</span>
+    </div>
+  `).join('')
+}
+
+const getRefreshInterval = () => {
+  try {
+    const type = navigator.connection?.effectiveType
+    if (type === '3g' || type === '2g' || type === 'slow-2g') return 30000
+  } catch {}
+  return 15000
 }
 
 const app = document.querySelector('#app')
@@ -52,6 +142,28 @@ const drivers = () => state.data.users.filter(u => u.role === 'driver' && u.stat
 const supervisors = () => state.data.users.filter(u => u.role === 'supervisor' && u.status === 'active')
 const routeById = (id) => state.data.routes.find(r => r.id === id)
 const userById = (id) => state.data.users.find(u => u.id === id)
+const tollConfig = () => Array.isArray(state.data.settings?.tolls) && state.data.settings.tolls.length
+  ? state.data.settings.tolls
+  : BRISBANE_TOLLS
+const tollById = (id) => tollConfig().find(t => t.id === id)
+const normalizeTollList = (tolls = []) => (Array.isArray(tolls) ? tolls : [])
+  .map(t => ({
+    id: t.id,
+    name: t.name,
+    price: Number(t.price || 0),
+    quantity: Math.max(1, Number(t.quantity || 1)),
+  }))
+  .map(t => ({ ...t, total: Math.round(t.price * t.quantity * 100) / 100 }))
+const tollTotal = (tolls = []) => normalizeTollList(tolls).reduce((sum, t) => sum + Number(t.total || 0), 0)
+const tollConfigText = () => tollConfig().map(t => `${t.id}|${t.name}|${Number(t.price || 0)}`).join('\n')
+const parseTollConfigText = (value = '') => String(value).split('\n')
+  .map(line => line.trim())
+  .filter(Boolean)
+  .map(line => {
+    const [id, name, price = 0] = line.split('|').map(part => part.trim())
+    return { id, name, price: Number(price || 0) }
+  })
+  .filter(t => t.id && t.name && Number.isFinite(t.price))
 
 // ── Data loading ───────────────────────────────────────────────────────────
 async function loadData() {
@@ -68,6 +180,20 @@ async function loadData() {
     state.data.holidayRequests = Array.isArray(holidays) ? holidays : []
     state.data.routes = Array.isArray(routes) ? routes : []
     if (settings && !settings.error) state.data.settings = settings
+
+    // Detect and notify new submissions
+    const kpiCount = state.data.kpiSubmissions.length
+    if (prevKpiCount > 0 && kpiCount > prevKpiCount) {
+      const n = kpiCount - prevKpiCount
+      pushNotification(`${n} new KPI submission${n > 1 ? 's' : ''} received`, 'kpi')
+    }
+    prevKpiCount = kpiCount
+
+    const holCount = state.data.holidayRequests.length
+    if (prevHolidayCount > 0 && holCount > prevHolidayCount) {
+      pushNotification('New holiday request submitted', 'holiday')
+    }
+    prevHolidayCount = holCount
   } catch (e) {
     console.error('Failed to load data', e)
   }
@@ -89,7 +215,12 @@ const showToast = (message) => {
 const setView = (view, options = {}) => {
   state.view = view
   Object.assign(state, options)
-  if (view === 'supervisor') api.get(`/api/dashboard/${state.filters.date}`).catch(() => {})
+  if (view === 'supervisor') {
+    api.get(`/api/dashboard/${state.filters.date}`).catch(() => {})
+    setTimeout(startClock, 100)
+  } else {
+    stopClock()
+  }
   window.scrollTo({ top: 0, behavior: 'smooth' })
   render()
 }
@@ -248,6 +379,7 @@ const historyKpiItem = (item) => `
       <span>${h(item.hours)}h</span>
       <span>${h(item.stops)} stops</span>
       <span>${h(item.parcels)} parcels</span>
+      <span>${h(formatMoney(item.tollTotal || tollTotal(item.tolls)))} tolls</span>
     </div>
   </article>
 `
@@ -290,8 +422,59 @@ const radio = (name, value, label, checked = false) => `
   </label>
 `
 
+const renderTollList = () => {
+  const tolls = normalizeTollList(state.kpiDraft.tolls)
+  if (!tolls.length) return '<div class="empty compact-empty">No tolls added.</div>'
+  return tolls.map(t => `
+    <article class="toll-row">
+      <div>
+        <strong>${h(t.name)}</strong>
+        <span>${h(t.quantity)} × ${h(formatMoney(t.price))}</span>
+      </div>
+      <div class="toll-row-end">
+        <strong>${h(formatMoney(t.total))}</strong>
+        <button class="mini-button reject" type="button" data-action="remove-toll" data-id="${h(t.id)}">Remove</button>
+      </div>
+    </article>
+  `).join('')
+}
+
+const tollsSection = () => {
+  const hasTolls = state.kpiDraft.hasTolls
+  return `
+    <section class="tolls-section">
+      <div class="field">
+        <span>Tolls</span>
+        <div class="segmented">
+          ${radio('hasTolls', 'yes', 'Yes', hasTolls)}
+          ${radio('hasTolls', 'no', 'No', !hasTolls)}
+        </div>
+      </div>
+      <div class="toll-details ${hasTolls ? '' : 'is-hidden'}" data-toll-details>
+        <div class="toll-picker">
+          <label class="field">
+            <span>Select toll</span>
+            <select class="select" name="tollSelect" data-toll-select>
+              ${tollConfig().map(t => `<option value="${h(t.id)}">${h(t.name)} · ${h(formatMoney(t.price))}</option>`).join('')}
+            </select>
+          </label>
+          <button class="ghost-button" type="button" data-action="add-toll">Add toll</button>
+        </div>
+        <div class="toll-list" data-toll-list>${renderTollList()}</div>
+        <div class="toll-total">
+          <span>Tolls subtotal</span>
+          <strong data-toll-total>${h(formatMoney(tollTotal(state.kpiDraft.tolls)))}</strong>
+        </div>
+      </div>
+    </section>
+  `
+}
+
 const kpiView = () => {
   const user = currentUser()
+  const defaultStart = '07:00'
+  const defaultFinish = '17:00'
+  const defaultHours = calculateWorkedHours(defaultStart, defaultFinish)
   return `
     ${header()}
     <main class="shell driver-shell">
@@ -335,12 +518,17 @@ const kpiView = () => {
         <div class="grid-2">
           <label class="field">
             <span>Start time</span>
-            <input class="input" name="startTime" type="time" value="07:00" required />
+            <input class="input" name="startTime" type="time" value="${defaultStart}" data-hours-source required />
           </label>
           <label class="field">
             <span>Finish time</span>
-            <input class="input" name="finishTime" type="time" value="17:00" required />
+            <input class="input" name="finishTime" type="time" value="${defaultFinish}" data-hours-source required />
           </label>
+        </div>
+        <div class="calculated-hours" aria-live="polite">
+          <span>Total hours</span>
+          <strong data-hours-output>${h(formatHours(defaultHours))}</strong>
+          <small>Calculated automatically from start and finish time.</small>
         </div>
         <div class="field">
           <span>Additional off-road duties</span>
@@ -368,11 +556,11 @@ const kpiView = () => {
             <option value="Radio Room">Radio Room</option>
           </select>
         </label>
-        <div class="grid-3">
-          ${stepperField('hours', 'Hours', 8, 0, 0.5)}
+        <div class="grid-2">
           ${stepperField('stops', 'Stops', 0, 0, 1)}
           ${stepperField('parcels', 'Parcels', 0, 0, 1)}
         </div>
+        ${tollsSection()}
         <label class="field">
           <span>Incidents</span>
           <textarea class="textarea" name="incidents" placeholder="Delays, unsafe access, failed pickup, vehicle issue..."></textarea>
@@ -442,8 +630,9 @@ const dashboardMetrics = (date, driverId = 'all', routeId = 'all') => {
   const totalStops = filtered.reduce((s, k) => s + Number(k.stops || 0), 0)
   const totalParcels = filtered.reduce((s, k) => s + Number(k.parcels || 0), 0)
   const totalHours = filtered.reduce((s, k) => s + Number(k.hours || 0), 0)
+  const totalTolls = filtered.reduce((s, k) => s + Number(k.tollTotal || tollTotal(k.tolls) || 0), 0)
   return {
-    filtered, totalStops, totalParcels, totalHours,
+    filtered, totalStops, totalParcels, totalHours, totalTolls,
     driversSubmitted: submittedIds.size,
     driversPending: pendingDrivers.length,
     averageStops: submittedIds.size ? Math.round(totalStops / submittedIds.size) : 0,
@@ -458,11 +647,45 @@ const stat = (label, value, helper = '') => `
   </article>
 `
 
+const buildSupervisorAlerts = (m) => {
+  const selectedDate = state.filters.date
+  const pendingHolidays = state.data.holidayRequests.filter(h => h.status === 'pending')
+  const incidentKpis = m.filtered.filter(k => String(k.incidents || '').trim())
+  const tollKpis = m.filtered.filter(k => Number(k.tollTotal || tollTotal(k.tolls) || 0) > 0 || normalizeTollList(k.tolls).length)
+  const overnightKpis = m.filtered.filter(k => parseTimeToMinutes(k.finishTime) !== null && parseTimeToMinutes(k.startTime) !== null && parseTimeToMinutes(k.finishTime) < parseTimeToMinutes(k.startTime))
+  const alerts = []
+  if (m.driversPending > 0) alerts.push({ level: 'warning', title: `${m.driversPending} drivers pending`, detail: `No KPI submitted for ${selectedDate}.` })
+  if (incidentKpis.length) alerts.push({ level: 'critical', title: `${incidentKpis.length} incident report${incidentKpis.length > 1 ? 's' : ''}`, detail: 'Review comments before close of day.' })
+  if (pendingHolidays.length) alerts.push({ level: 'info', title: `${pendingHolidays.length} holiday request${pendingHolidays.length > 1 ? 's' : ''}`, detail: 'Awaiting supervisor/admin approval.' })
+  if (tollKpis.length) alerts.push({ level: 'info', title: `${tollKpis.length} toll submission${tollKpis.length > 1 ? 's' : ''}`, detail: `${formatMoney(m.totalTolls)} recorded for selected filters.` })
+  if (overnightKpis.length) alerts.push({ level: 'warning', title: `${overnightKpis.length} overnight shift${overnightKpis.length > 1 ? 's' : ''}`, detail: 'Finish time crossed midnight.' })
+  return alerts
+}
+
+const supervisorAlertBoard = (m) => {
+  const alerts = buildSupervisorAlerts(m)
+  return `
+    <section class="panel panel-pad stack">
+      <div class="view-title"><h3>Alert board</h3><p>Items needing attention today.</p></div>
+      <div class="alert-list">
+        ${alerts.length
+          ? alerts.map(a => `
+              <article class="alert-item alert-${h(a.level)}">
+                <strong>${h(a.title)}</strong>
+                <span>${h(a.detail)}</span>
+              </article>
+            `).join('')
+          : '<div class="empty">No active alerts.</div>'
+        }
+      </div>
+    </section>
+  `
+}
+
 const supervisorDashboard = () => {
   const user = currentUser()
   const m = dashboardMetrics(state.filters.date, state.filters.driverId, state.filters.routeId)
   const previous = dashboardMetrics(dayISO(-1))
-  const lastUpdated = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   return `
     ${header()}
     <main class="shell">
@@ -470,18 +693,31 @@ const supervisorDashboard = () => {
         <div class="view-title">
           <p class="eyebrow">StarTrack · Supervisor</p>
           <h2>Daily metrics</h2>
-          <p>Signed in as ${h(formatName(user))}. Live view refreshed ${h(lastUpdated)}.</p>
+          <p>${h(formatName(user))} · ${h(brisbaneDate())}</p>
         </div>
         <div class="toolbar">
+          <div class="live-clock">
+            <span class="live-dot"></span>
+            <span class="live-label">Brisbane</span>
+            <span class="clock-time" id="brisbane-clock">${brisbaneClock()}</span>
+          </div>
           <button class="ghost-button" data-action="export-csv">Export CSV</button>
         </div>
       </section>
+      <div class="notif-bar">
+        <div class="notif-header">
+          <span class="live-dot"></span>
+          <span>Activity feed</span>
+        </div>
+        <div class="notif-scroll" id="notif-list">${renderNotifList()}</div>
+      </div>
       <section class="dashboard">
         ${filters()}
         <div class="stat-grid">
           ${stat('Total stops today', m.totalStops)}
           ${stat('Total parcels today', m.totalParcels)}
           ${stat('Total hours submitted', m.totalHours.toFixed(1))}
+          ${stat('Total tolls', formatMoney(m.totalTolls))}
           ${stat('Drivers submitted', m.driversSubmitted, `${m.driversPending} pending`)}
           ${stat('Drivers pending', m.driversPending)}
           ${stat('Average stops per driver', m.averageStops)}
@@ -497,6 +733,7 @@ const supervisorDashboard = () => {
             ${driverTable(m.filtered)}
           </section>
           <section class="stack">
+            ${supervisorAlertBoard(m)}
             ${pendingDriversPanel(m)}
             ${holidayApprovalPanel()}
           </section>
@@ -558,7 +795,7 @@ const driverTable = (rows) => `
       <table>
         <thead>
           <tr>
-            <th>Driver</th><th>Route</th><th>Hours</th><th>Stops</th><th>Parcels</th><th>Status</th>
+            <th>Driver</th><th>Route</th><th>Hours</th><th>Stops</th><th>Parcels</th><th>Tolls</th><th>Status</th>
           </tr>
         </thead>
         <tbody>
@@ -571,10 +808,11 @@ const driverTable = (rows) => `
                   <td>${h(item.hours)}</td>
                   <td>${h(item.stops)}</td>
                   <td>${h(item.parcels)}</td>
+                  <td>${h(formatMoney(item.tollTotal || tollTotal(item.tolls)))}</td>
                   <td><span class="status submitted">${h(item.status)}</span></td>
                 </tr>`
               }).join('')
-            : '<tr><td colspan="6">No KPI submissions for this filter.</td></tr>'
+            : '<tr><td colspan="7">No KPI submissions for this filter.</td></tr>'
           }
         </tbody>
       </table>
@@ -755,6 +993,57 @@ const adminUsers = () => {
   `
 }
 
+const comparisonRows = (count = 7) => Array.from({ length: count }, (_, i) => {
+  const date = dayISO(-i)
+  const m = dashboardMetrics(date)
+  return { date, ...m }
+})
+
+const trendDelta = (current, previous) => {
+  const diff = Number(current || 0) - Number(previous || 0)
+  if (!diff) return 'No change'
+  return `${diff > 0 ? '+' : ''}${Number.isInteger(diff) ? diff : diff.toFixed(1)} vs previous day`
+}
+
+const adminComparisons = () => {
+  const rows = comparisonRows(7)
+  const today = rows[0]
+  const yesterday = rows[1] || dashboardMetrics(dayISO(-1))
+  return `
+    <section class="panel panel-pad stack">
+      <div class="view-title"><h3>Daily comparisons</h3><p>Last 7 days across KPI submissions.</p></div>
+      <div class="stat-grid">
+        ${stat('Stops vs yesterday', today.totalStops, trendDelta(today.totalStops, yesterday.totalStops))}
+        ${stat('Parcels vs yesterday', today.totalParcels, trendDelta(today.totalParcels, yesterday.totalParcels))}
+        ${stat('Hours vs yesterday', today.totalHours.toFixed(1), trendDelta(today.totalHours, yesterday.totalHours))}
+        ${stat('Tolls vs yesterday', formatMoney(today.totalTolls), trendDelta(today.totalTolls, yesterday.totalTolls))}
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th><th>Stops</th><th>Parcels</th><th>Hours</th><th>Tolls</th><th>Submitted</th><th>Pending</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>
+                <td>${h(r.date)}</td>
+                <td>${h(r.totalStops)}</td>
+                <td>${h(r.totalParcels)}</td>
+                <td>${h(r.totalHours.toFixed(1))}</td>
+                <td>${h(formatMoney(r.totalTolls))}</td>
+                <td>${h(r.driversSubmitted)}</td>
+                <td>${h(r.driversPending)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `
+}
+
 const adminData = () => {
   const m = dashboardMetrics(todayISO())
   return `
@@ -764,7 +1053,9 @@ const adminData = () => {
         ${stat('Routes', state.data.routes.length)}
         ${stat('KPI submissions', state.data.kpiSubmissions.length)}
         ${stat('Holiday requests', state.data.holidayRequests.length)}
+        ${stat('Today tolls', formatMoney(m.totalTolls))}
       </div>
+      ${adminComparisons()}
       <section class="panel panel-pad stack">
         <div class="view-title"><h3>All KPI data</h3><p>Today: ${h(m.totalStops)} stops, ${h(m.totalParcels)} parcels, ${h(m.totalHours.toFixed(1))} hours.</p></div>
         ${driverTable(state.data.kpiSubmissions.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20))}
@@ -789,6 +1080,11 @@ const adminSettings = () => `
       <span>Active route numbers</span>
       <textarea class="textarea" name="routes">${h(state.data.routes.map(r => r.routeNumber).join(', '))}</textarea>
       <small class="hint">Comma-separated route numbers.</small>
+    </label>
+    <label class="field">
+      <span>Brisbane tolls config</span>
+      <textarea class="textarea code-textarea" name="tolls">${h(tollConfigText())}</textarea>
+      <small class="hint">One toll per line: id | name | price. Prices can be updated later without touching the KPI form.</small>
     </label>
     <button class="button" type="submit">Save settings</button>
   </form>
@@ -816,10 +1112,30 @@ const validateKpi = (data) => {
   if (!data.routeId) errors.push('Route is required.')
   if (!data.supervisorId) errors.push('Supervisor is required.')
   if (!data.startTime || !data.finishTime) errors.push('Start and finish time are required.')
-  if (Number(data.hours) <= 0) errors.push('Hours must be greater than zero.')
+  if (calculateWorkedHours(data.startTime, data.finishTime) <= 0) errors.push('Total hours must be greater than zero.')
+  if (data.hasTolls === 'yes' && !state.kpiDraft.tolls.length) errors.push('Add at least one toll or choose No.')
   if (Number(data.breakMinutes) === 30 && data.breakApprovedBy !== 'Radio Room')
     errors.push('Radio Room approval is required for a 30 minute break.')
   return errors
+}
+
+const updateCalculatedHours = (form) => {
+  if (!form || form.dataset.form !== 'kpi') return
+  const output = form.querySelector('[data-hours-output]')
+  if (!output) return
+  const startTime = form.elements.startTime?.value
+  const finishTime = form.elements.finishTime?.value
+  output.textContent = formatHours(calculateWorkedHours(startTime, finishTime))
+}
+
+const refreshTollUi = (form) => {
+  if (!form || form.dataset.form !== 'kpi') return
+  const details = form.querySelector('[data-toll-details]')
+  const list = form.querySelector('[data-toll-list]')
+  const total = form.querySelector('[data-toll-total]')
+  if (details) details.classList.toggle('is-hidden', !state.kpiDraft.hasTolls)
+  if (list) list.innerHTML = renderTollList()
+  if (total) total.textContent = formatMoney(tollTotal(state.kpiDraft.tolls))
 }
 
 // ── Form handlers ──────────────────────────────────────────────────────────
@@ -850,6 +1166,9 @@ const handleKpi = async (form) => {
   const data = formData(form)
   const errors = validateKpi(data)
   if (errors.length) { showToast(errors[0]); return }
+  const hours = calculateWorkedHours(data.startTime, data.finishTime)
+  const hasTolls = data.hasTolls === 'yes'
+  const selectedTolls = hasTolls ? normalizeTollList(state.kpiDraft.tolls) : []
 
   const submit = form.querySelector('[data-submit-label]')
   submit.disabled = true
@@ -862,13 +1181,15 @@ const handleKpi = async (form) => {
     routeId: data.routeId,
     startTime: data.startTime,
     finishTime: data.finishTime,
-    hours: Number(data.hours),
+    hours,
     breakMinutes: Number(data.breakMinutes),
     breakApprovedBy: data.breakApprovedBy,
     offroadDuties: data.offroadDuties === 'yes',
     offroadNotes: data.offroadNotes,
     stops: Number(data.stops),
     parcels: Number(data.parcels),
+    tolls: selectedTolls,
+    tollTotal: tollTotal(selectedTolls),
     incidents: data.incidents,
     comments: data.comments,
   })
@@ -881,6 +1202,7 @@ const handleKpi = async (form) => {
   }
 
   state.data.kpiSubmissions.unshift(kpi)
+  state.kpiDraft = createKpiDraft()
   showToast('KPI submitted successfully.')
   setView('driver')
 }
@@ -927,11 +1249,14 @@ const handleUser = async (form) => {
 const handleSettings = async (form) => {
   const data = formData(form)
   const routeNumbers = data.routes.split(',').map(r => r.trim()).filter(Boolean)
+  const tolls = parseTollConfigText(data.tolls)
+  if (!tolls.length) { showToast('Add at least one valid toll config line.'); return }
   const result = await api.put('/api/settings', {
     systemName: data.systemName,
     depotName: data.depotName,
     cutOffTime: data.cutOffTime,
     defaultBreakMinutes: Number(data.defaultBreakMinutes),
+    tolls,
     routes: routeNumbers,
   })
   if (result.error) { showToast('Error saving settings.'); return }
@@ -962,13 +1287,29 @@ const downloadFile = (filename, content, type) => {
 
 const exportJson = () => downloadFile(`startrack-export-${todayISO()}.json`, JSON.stringify(state.data, null, 2), 'application/json')
 
+const tollSummary = (tolls = []) => normalizeTollList(tolls)
+  .map(t => `${t.name} x${t.quantity} @ ${formatMoney(t.price)}`)
+  .join('; ')
+
 const exportCsv = () => {
-  const rows = [['date', 'driver', 'route', 'hours', 'stops', 'parcels', 'status']]
+  const rows = [['date', 'driver', 'route', 'start_time', 'finish_time', 'hours', 'stops', 'parcels', 'toll_total', 'tolls', 'status']]
   state.data.kpiSubmissions.forEach(k => {
     const driver = userById(k.driverId)
-    rows.push([k.date, driver ? formatName(driver) : '', routeById(k.routeId)?.routeNumber || '', k.hours, k.stops, k.parcels, k.status])
+    rows.push([
+      k.date,
+      driver ? formatName(driver) : '',
+      routeById(k.routeId)?.routeNumber || '',
+      k.startTime || '',
+      k.finishTime || '',
+      k.hours,
+      k.stops,
+      k.parcels,
+      Number(k.tollTotal || tollTotal(k.tolls)).toFixed(2),
+      tollSummary(k.tolls),
+      k.status,
+    ])
   })
-  const csv = rows.map(r => r.map(c => `"${String(c).replaceAll('"', '""')}"`).join(',')).join('\n')
+  const csv = '\ufeff' + rows.map(r => r.map(c => `"${String(c).replaceAll('"', '""')}"`).join(',')).join('\n')
   downloadFile('startrack-kpi.csv', csv, 'text/csv')
 }
 
@@ -985,6 +1326,19 @@ app.addEventListener('submit', async (event) => {
   if (name === 'settings') await handleSettings(form)
 })
 
+app.addEventListener('input', (event) => {
+  if (event.target.matches('[data-hours-source]')) updateCalculatedHours(event.target.form)
+})
+
+app.addEventListener('change', (event) => {
+  if (event.target.matches('[data-hours-source]')) updateCalculatedHours(event.target.form)
+  if (event.target.name === 'hasTolls') {
+    state.kpiDraft.hasTolls = event.target.value === 'yes'
+    if (!state.kpiDraft.hasTolls) state.kpiDraft.tolls = []
+    refreshTollUi(event.target.form)
+  }
+})
+
 app.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-action]')
   if (!target) return
@@ -996,7 +1350,7 @@ app.addEventListener('click', async (event) => {
   if (action === 'login-driver') setView('login', { loginRole: 'driver', intent: '', loginError: '' })
   if (action === 'login-supervisor') setView('login', { loginRole: 'supervisor', intent: '', loginError: '' })
   if (action === 'login-admin') setView('login', { loginRole: 'admin', intent: '', loginError: '' })
-  if (action === 'open-kpi') requireRole('driver', 'kpi', 'kpi')
+  if (action === 'open-kpi') { state.kpiDraft = createKpiDraft(); requireRole('driver', 'kpi', 'kpi') }
   if (action === 'open-holiday') requireRole('driver', 'holiday', 'holiday')
 
   if (action === 'demo-login') {
@@ -1019,6 +1373,23 @@ app.addEventListener('click', async (event) => {
     const min = Number(stepper.dataset.min)
     const next = Number(input.value || 0) + (action === 'step-up' ? step : -step)
     input.value = Math.max(min, next).toFixed(step % 1 ? 1 : 0)
+  }
+
+  if (action === 'add-toll') {
+    const form = target.closest('form')
+    const toll = tollById(form?.querySelector('[data-toll-select]')?.value)
+    if (!toll) return
+    const existing = state.kpiDraft.tolls.find(t => t.id === toll.id)
+    if (existing) existing.quantity = Number(existing.quantity || 1) + 1
+    else state.kpiDraft.tolls.push({ id: toll.id, name: toll.name, price: Number(toll.price || 0), quantity: 1 })
+    state.kpiDraft.hasTolls = true
+    refreshTollUi(form)
+  }
+
+  if (action === 'remove-toll') {
+    const form = target.closest('form')
+    state.kpiDraft.tolls = state.kpiDraft.tolls.filter(t => t.id !== target.dataset.id)
+    refreshTollUi(form)
   }
 
   if (action === 'holiday-approve') await updateHolidayStatus(target.dataset.id, 'approved')
@@ -1052,10 +1423,14 @@ app.addEventListener('click', async (event) => {
   }
 })
 
-// Refresh supervisor view every 30s
-window.setInterval(async () => {
-  if (state.view === 'supervisor') { await loadData(); render() }
-}, 30000)
+// Adaptive refresh — 15s on 4G/WiFi, 30s on slower connections
+function scheduleRefresh() {
+  setTimeout(async () => {
+    if (state.view === 'supervisor') { await loadData(); render() }
+    scheduleRefresh()
+  }, getRefreshInterval())
+}
+scheduleRefresh()
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {

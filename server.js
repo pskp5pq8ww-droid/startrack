@@ -9,6 +9,16 @@ const STORAGE_DIR = path.join(ROOT, 'storage')
 const KPIS_DIR = path.join(STORAGE_DIR, 'kpis')
 const DASHBOARD_DIR = path.join(STORAGE_DIR, 'dashboard')
 
+const BRISBANE_TOLLS = [
+  { id: 'gateway', name: 'Gateway Motorway / Gateway Bridge', price: 0 },
+  { id: 'go-between', name: 'Go Between Bridge', price: 0 },
+  { id: 'clem7', name: 'Clem7 Tunnel', price: 0 },
+  { id: 'airportlinkm7', name: 'AirportlinkM7', price: 0 },
+  { id: 'legacy-way', name: 'Legacy Way', price: 0 },
+  { id: 'logan-motorway', name: 'Logan Motorway', price: 0 },
+  { id: 'toowoomba-bypass', name: 'Toowoomba Bypass', price: 0 },
+]
+
 const MIME = {
   '.html': 'text/html',
   '.css': 'text/css',
@@ -45,6 +55,36 @@ function verifyPassword(password, stored) {
     const attempt = crypto.scryptSync(password, salt, 64).toString('hex')
     return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(attempt, 'hex'))
   } catch { return false }
+}
+
+function parseTimeToMinutes(time = '') {
+  const [hours, minutes] = String(time).split(':').map(Number)
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null
+  return hours * 60 + minutes
+}
+
+function calculateWorkedHours(startTime, finishTime) {
+  const start = parseTimeToMinutes(startTime)
+  let finish = parseTimeToMinutes(finishTime)
+  if (start === null || finish === null) return 0
+  if (finish < start) finish += 24 * 60
+  return Math.round(((finish - start) / 60) * 100) / 100
+}
+
+function normalizeTolls(tolls = [], config = BRISBANE_TOLLS) {
+  if (!Array.isArray(tolls)) return []
+  return tolls.map(item => {
+    const configured = config.find(t => t.id === item.id) || item
+    const quantity = Math.max(1, Number(item.quantity || 1))
+    const price = Number(configured.price || item.price || 0)
+    return {
+      id: configured.id || item.id,
+      name: configured.name || item.name,
+      price,
+      quantity,
+      total: Math.round(price * quantity * 100) / 100,
+    }
+  }).filter(t => t.id && t.name)
 }
 
 const sessions = new Map()
@@ -111,7 +151,10 @@ function initStorage() {
 
   const settingsFile = path.join(STORAGE_DIR, 'settings.json')
   if (!fs.existsSync(settingsFile)) {
-    writeJSON(settingsFile, { depotName: 'BNPF Depot', systemName: 'StarTrack', cutOffTime: '18:30', defaultBreakMinutes: 60 })
+    writeJSON(settingsFile, { depotName: 'BNPF Depot', systemName: 'StarTrack', cutOffTime: '18:30', defaultBreakMinutes: 60, tolls: BRISBANE_TOLLS })
+  } else {
+    const settings = readJSON(settingsFile, {})
+    if (!Array.isArray(settings.tolls)) writeJSON(settingsFile, { ...settings, tolls: BRISBANE_TOLLS })
   }
 
   const routesFile = path.join(STORAGE_DIR, 'routes.json')
@@ -261,9 +304,14 @@ http.createServer(async (req, res) => {
   if (pathname === '/api/kpi' && req.method === 'POST') {
     if (!auth || auth.role !== 'driver') return respond(res, 403, { error: 'Forbidden' })
     const date = body.date || new Date().toISOString().slice(0, 10)
+    const hours = calculateWorkedHours(body.startTime, body.finishTime)
+    if (hours <= 0) return respond(res, 400, { error: 'Invalid start or finish time' })
+    const settings = readJSON(path.join(STORAGE_DIR, 'settings.json'), {})
+    const tolls = normalizeTolls(body.tolls, Array.isArray(settings.tolls) ? settings.tolls : BRISBANE_TOLLS)
+    const tollTotal = tolls.reduce((sum, toll) => sum + Number(toll.total || 0), 0)
     const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
     const id = `kpi_${crypto.randomBytes(3).toString('hex')}_${Date.now().toString(36)}`
-    const kpi = { id, driverId: auth.id, ...body, status: 'submitted', createdAt: new Date().toISOString() }
+    const kpi = { id, driverId: auth.id, ...body, hours, tolls, tollTotal, status: 'submitted', createdAt: new Date().toISOString() }
     const dir = path.join(KPIS_DIR, date)
     ensureDir(dir)
     writeJSON(path.join(dir, `${ts}_${id}.json`), kpi)
