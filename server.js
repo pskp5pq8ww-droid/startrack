@@ -303,28 +303,71 @@ http.createServer(async (req, res) => {
     }
   }
 
-  // GET /api/kpi
+  // GET /api/kpi — drivers see only their own, supervisors/admins see all
   if (pathname === '/api/kpi' && req.method === 'GET') {
     if (!auth) return respond(res, 401, { error: 'Unauthorized' })
-    return respond(res, 200, loadAllKpis())
+    const all = loadAllKpis()
+    if (auth.role === 'driver') return respond(res, 200, all.filter(k => k.driverId === auth.id))
+    return respond(res, 200, all)
   }
 
-  // POST /api/kpi
+  // POST /api/kpi — upsert by driver+date (overwrites prior submission for same day)
   if (pathname === '/api/kpi' && req.method === 'POST') {
     if (!auth || auth.role !== 'driver') return respond(res, 403, { error: 'Forbidden' })
     const date = body.date || new Date().toISOString().slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return respond(res, 400, { error: 'Invalid date format' })
     const hours = calculateWorkedHours(body.startTime, body.finishTime)
     if (hours <= 0) return respond(res, 400, { error: 'Invalid start or finish time' })
     const settings = readJSON(path.join(STORAGE_DIR, 'settings.json'), {})
     const tolls = normalizeTolls(body.tolls, Array.isArray(settings.tolls) ? settings.tolls : BRISBANE_TOLLS)
     const tollTotal = tolls.reduce((sum, toll) => sum + Number(toll.total || 0), 0)
-    const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
-    const id = `kpi_${crypto.randomBytes(3).toString('hex')}_${Date.now().toString(36)}`
-    const kpi = { id, driverId: auth.id, ...body, hours, tolls, tollTotal, status: 'submitted', createdAt: new Date().toISOString() }
     const dir = path.join(KPIS_DIR, date)
     ensureDir(dir)
-    writeJSON(path.join(dir, `${ts}_${id}.json`), kpi)
-    return respond(res, 201, kpi)
+
+    // Dedup: remove any existing KPI for this driver on this date
+    let existingId = null
+    let existingCreatedAt = null
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith('.json')) continue
+      const fp = path.join(dir, file)
+      const existing = readJSON(fp)
+      if (existing && existing.driverId === auth.id) {
+        existingId = existing.id
+        existingCreatedAt = existing.createdAt
+        fs.unlinkSync(fp)
+      }
+    }
+
+    const now = new Date().toISOString()
+    const id = existingId || `kpi_${crypto.randomBytes(3).toString('hex')}_${Date.now().toString(36)}`
+    const sanitize = (v) => typeof v === 'string' ? v.slice(0, 2000) : v
+    const kpi = {
+      id,
+      driverId: auth.id,
+      driverName: `${auth.firstName} ${auth.lastName}`,
+      date,
+      driverType: sanitize(body.driverType || ''),
+      supervisorId: body.supervisorId || '',
+      routeId: body.routeId || '',
+      startTime: body.startTime || '',
+      finishTime: body.finishTime || '',
+      hours,
+      breakMinutes: Number(body.breakMinutes || 60),
+      radioRoomNotified: body.radioRoomNotified || '',
+      offroadDuties: !!body.offroadDuties,
+      offroadNotes: sanitize(body.offroadNotes || ''),
+      stops: Math.max(0, Number(body.stops || 0)),
+      parcels: Math.max(0, Number(body.parcels || 0)),
+      tolls,
+      tollTotal,
+      incidents: sanitize(body.incidents || ''),
+      comments: sanitize(body.comments || ''),
+      status: 'submitted',
+      createdAt: existingCreatedAt || now,
+      updatedAt: now,
+    }
+    writeJSON(path.join(dir, `${auth.id}.json`), kpi)
+    return respond(res, existingId ? 200 : 201, kpi)
   }
 
   // GET /api/holidays

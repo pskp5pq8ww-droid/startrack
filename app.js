@@ -75,6 +75,7 @@ const state = {
   adminTab: 'users',
   editingUserId: '',
   kpiDraft: createKpiDraft(),
+  chartMode: 'by-driver',
 }
 
 // ── Live tracking ──────────────────────────────────────────────────────────
@@ -679,11 +680,14 @@ const dashboardMetrics = (date, driverId = 'all', routeId = 'all') => {
   const totalParcels = filtered.reduce((s, k) => s + Number(k.parcels || 0), 0)
   const totalHours = filtered.reduce((s, k) => s + Number(k.hours || 0), 0)
   const totalTolls = filtered.reduce((s, k) => s + Number(k.tollTotal || tollTotal(k.tolls) || 0), 0)
+  const n = submittedIds.size
   return {
     filtered, totalStops, totalParcels, totalHours, totalTolls,
-    driversSubmitted: submittedIds.size,
+    driversSubmitted: n,
     driversPending: pendingDrivers.length,
-    averageStops: submittedIds.size ? Math.round(totalStops / submittedIds.size) : 0,
+    averageStops: n ? Math.round(totalStops / n) : 0,
+    averageParcels: n ? Math.round(totalParcels / n) : 0,
+    averageHours: n ? Math.round((totalHours / n) * 10) / 10 : 0,
   }
 }
 
@@ -780,14 +784,27 @@ const supervisorDashboard = () => {
           ${stat('Total hours submitted', m.totalHours.toFixed(1))}
           ${stat('Drivers submitted', m.driversSubmitted, `${m.driversPending} pending`)}
           ${stat('Drivers pending', m.driversPending)}
-          ${stat('Average stops per driver', m.averageStops)}
+          ${stat('Avg stops / driver', m.averageStops)}
+          ${stat('Avg parcels / driver', m.averageParcels)}
+          ${stat('Avg hours / driver', m.averageHours.toFixed(1))}
           ${stat('Yesterday stops', previous.totalStops)}
           ${stat('Yesterday parcels', previous.totalParcels)}
         </div>
         <div class="dashboard-main">
           <section class="stack">
             <div class="panel panel-pad stack">
-              <div class="view-title"><h3>KPI trend</h3><p>Last seven days by total stops.</p></div>
+              <div class="view-title">
+                <h3>Parcels delivered</h3>
+                <p>${state.chartMode === 'by-driver' ? `By driver for ${h(state.filters.date)}.` : 'Daily totals for the last seven days.'}</p>
+              </div>
+              <div class="chart-toolbar">
+                <button class="role-pill ${state.chartMode === 'by-driver' ? 'active' : ''}" type="button" data-action="chart-mode" data-mode="by-driver">By driver</button>
+                <button class="role-pill ${state.chartMode === 'by-date' ? 'active' : ''}" type="button" data-action="chart-mode" data-mode="by-date">By date</button>
+              </div>
+              <div class="trend">${parcelsBarChart(m)}</div>
+            </div>
+            <div class="panel panel-pad stack">
+              <div class="view-title"><h3>Stops trend</h3><p>Last seven days.</p></div>
               <div class="trend">${trendSvg()}</div>
             </div>
             ${driverTable(m.filtered, { showTolls: false })}
@@ -826,6 +843,50 @@ const filters = () => `
     <button class="button" type="submit">Apply</button>
   </form>
 `
+
+const parcelsBarChart = (m) => {
+  let labels = []
+  let values = []
+  if (state.chartMode === 'by-driver') {
+    const grouped = new Map()
+    for (const k of m.filtered) {
+      grouped.set(k.driverId, (grouped.get(k.driverId) || 0) + Number(k.parcels || 0))
+    }
+    const entries = [...grouped.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)
+    labels = entries.map(([id]) => {
+      const u = userById(id)
+      return u ? u.firstName : 'Unknown'
+    })
+    values = entries.map(([, v]) => v)
+  } else {
+    const days = Array.from({ length: 7 }, (_, i) => dayISO(i - 6))
+    labels = days.map(d => d.slice(5))
+    values = days.map(d => state.data.kpiSubmissions.filter(k => k.date === d).reduce((s, k) => s + Number(k.parcels || 0), 0))
+  }
+  if (!values.length || values.every(v => !v)) {
+    return `<svg viewBox="0 0 560 230" role="img"><text x="280" y="115" text-anchor="middle" fill="rgba(255,255,255,0.45)" font-size="13">No parcel data for this view.</text></svg>`
+  }
+  const max = Math.max(1, ...values)
+  const W = 560, H = 230, pad = 32
+  const innerW = W - pad * 2
+  const innerH = H - 60
+  const bw = innerW / values.length
+  const bars = values.map((v, i) => {
+    const x = pad + i * bw + bw * 0.15
+    const w = bw * 0.7
+    const barH = (v / max) * innerH
+    const y = H - 40 - barH
+    return `<g>
+      <rect x="${x}" y="${y}" width="${w}" height="${barH}" rx="4" fill="#009AD5"></rect>
+      <text x="${x + w / 2}" y="${y - 6}" text-anchor="middle" font-size="11" fill="rgba(255,255,255,0.85)" font-weight="700">${v}</text>
+      <text x="${x + w / 2}" y="${H - 16}" text-anchor="middle" font-size="11" fill="rgba(255,255,255,0.55)">${labels[i] || ''}</text>
+    </g>`
+  }).join('')
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Parcels bar chart">
+    <line x1="${pad}" y1="${H - 40}" x2="${W - pad}" y2="${H - 40}" stroke="rgba(255,255,255,0.15)" />
+    ${bars}
+  </svg>`
+}
 
 const trendSvg = () => {
   const days = Array.from({ length: 7 }, (_, i) => dayISO(i - 6))
@@ -1256,13 +1317,17 @@ const handleKpi = async (form) => {
   })
 
   if (kpi.error) {
-    showToast('Error submitting KPI. Please try again.')
+    showToast(kpi.error || 'Error submitting KPI. Please try again.')
     submit.disabled = false
     submit.textContent = 'Submit KPI'
     return
   }
 
-  state.data.kpiSubmissions.unshift(kpi)
+  submit.textContent = 'Submitted ✓'
+  submit.classList.add('success-state')
+
+  // Replace any prior same-date submission for this driver in local cache (server already upserted)
+  state.data.kpiSubmissions = [kpi, ...state.data.kpiSubmissions.filter(k => !(k.driverId === kpi.driverId && k.date === kpi.date))]
 
   if (Number(data.breakMinutes) === 30 && data.radioRoomNotified === 'yes') {
     const user = currentUser()
@@ -1275,9 +1340,10 @@ const handleKpi = async (form) => {
     }).catch(() => {})
   }
 
+  const wasUpdate = kpi.createdAt !== kpi.updatedAt
   state.kpiDraft = createKpiDraft()
-  showToast('KPI submitted successfully.')
-  setView('driver')
+  showToast(wasUpdate ? 'KPI updated for today.' : 'KPI submitted successfully.')
+  setTimeout(() => setView('driver'), 600)
 }
 
 const handleHoliday = async (form) => {
@@ -1516,6 +1582,7 @@ app.addEventListener('click', async (event) => {
     setView('admin')
   }
 
+  if (action === 'chart-mode') { state.chartMode = target.dataset.mode; render() }
   if (action === 'admin-tab') { state.adminTab = target.dataset.id; render() }
   if (action === 'edit-user') { state.editingUserId = target.dataset.id; state.adminTab = 'users'; render() }
   if (action === 'cancel-edit') { state.editingUserId = ''; render() }
