@@ -199,7 +199,11 @@ function serveStatic(res, pathname) {
       })
       return
     }
-    res.writeHead(200, { 'Content-Type': contentType })
+    const noCache = ['.css', '.js'].includes(ext)
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      ...(noCache ? { 'Cache-Control': 'no-store, must-revalidate', 'Pragma': 'no-cache' } : {}),
+    })
     res.end(data)
   })
 }
