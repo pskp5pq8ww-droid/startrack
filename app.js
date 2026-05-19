@@ -113,17 +113,15 @@ const header = () => {
   const user = currentUser()
   return `
     <header class="topbar">
-      <a class="brand" href="#" data-action="home" aria-label="StarTrack home">
+      <button class="brand" data-action="home" aria-label="StarTrack home">
         <img src="./startrack.png" alt="StarTrack" class="brand-logo" />
-        <span class="brand-sub">${h(state.data.settings.depotName)} · internal</span>
-      </a>
+        <span class="brand-sub">${h(state.data.settings.depotName)}</span>
+      </button>
       <nav class="top-actions" aria-label="Role access">
         ${user
           ? `<span class="chip">${h(user.role)} · ${h(user.firstName)}</span>
              <button class="text-link" data-action="logout">Sign out</button>`
-          : `<button class="text-link" data-action="login-driver">Driver Login</button>
-             <button class="text-link" data-action="login-supervisor">Supervisor Login</button>
-             <button class="text-link" data-action="login-admin">Admin Login</button>`
+          : `<button class="text-link" data-action="login-supervisor">Staff Login</button>`
         }
       </nav>
     </header>
@@ -132,28 +130,18 @@ const header = () => {
 
 // ── Home view ──────────────────────────────────────────────────────────────
 const homeView = () => `
-  ${header()}
-  <main class="shell home">
-    <section class="home-head">
-      <p class="eyebrow">${h(state.data.settings.depotName)}</p>
-      <h1>Depot KPI System</h1>
-      <p class="lede">Fast daily submissions for drivers, live depot visibility for supervisors, and clean administration for internal operations.</p>
-      <div class="home-meta">
-        <span class="chip">Mobile-first driver flow</span>
-        <span class="chip">Supervisor dashboard</span>
-        <span class="chip">Server-side storage</span>
-      </div>
-    </section>
-    <section class="launch-grid" aria-label="Main actions">
-      <button class="launch-button primary" data-action="open-kpi">
-        <strong>Fill KPI</strong>
-        <span>Daily route, hours, stops, parcels and incidents.</span>
+  <main class="home-screen">
+    <button class="logo-admin-btn" data-action="admin-access" aria-label="StarTrack staff login">
+      <img src="./startrack.png" alt="StarTrack" />
+    </button>
+    <div class="home-actions">
+      <button class="home-card primary" data-action="open-kpi">
+        <span class="home-card-title">Fill KPI</span>
       </button>
-      <button class="launch-button" data-action="open-holiday">
-        <strong>Holiday Request</strong>
-        <span>Submit leave dates and track approval status.</span>
+      <button class="home-card secondary" data-action="open-holiday">
+        <span class="home-card-title">Holiday Request</span>
       </button>
-    </section>
+    </div>
   </main>
 `
 
@@ -164,16 +152,22 @@ const loginView = () => {
   const demoUsers = state.data.users.filter(u => u.role === state.loginRole).slice(0, 3)
   const defaultEmail = state.loginRole === 'driver' ? 'driver@depotops.test' : state.loginRole === 'supervisor' ? 'supervisor@depotops.test' : 'admin@depotops.test'
   const defaultPass = state.loginRole === 'driver' ? 'driver123' : state.loginRole === 'supervisor' ? 'supervisor123' : 'admin123'
+  const isStaff = state.loginRole === 'supervisor' || state.loginRole === 'admin'
   return `
     ${header()}
     <main class="shell login-wrap">
       <section class="login-panel">
         <form class="form" data-form="login">
           <div class="view-title">
-            <p class="eyebrow">${roleLabel(state.loginRole)} access</p>
+            <p class="eyebrow">StarTrack · ${roleLabel(state.loginRole)}</p>
             <h2>Sign in</h2>
-            <p>${state.intent === 'holiday' ? 'Continue to holiday request.' : state.intent === 'kpi' ? 'Continue to daily KPI.' : 'Access your role workspace.'}</p>
           </div>
+          ${isStaff ? `
+            <div class="role-toggle">
+              <button type="button" class="role-pill ${state.loginRole === 'supervisor' ? 'active' : ''}" data-action="login-supervisor">Supervisor</button>
+              <button type="button" class="role-pill ${state.loginRole === 'admin' ? 'active' : ''}" data-action="login-admin">Admin</button>
+            </div>
+          ` : ''}
           <label class="field">
             <span>Email</span>
             <input class="input" name="email" type="email" autocomplete="username" value="${h(defaultEmail)}" required />
@@ -211,9 +205,9 @@ const driverDashboard = () => {
     <main class="shell driver-shell">
       <section class="view-head">
         <div class="view-title">
-          <p class="eyebrow">Driver workspace</p>
+          <p class="eyebrow">StarTrack · Driver</p>
           <h2>Hi, ${h(user.firstName)}</h2>
-          <p>${todaySubmission ? 'Your KPI for today has been submitted.' : 'Your daily KPI is still pending.'}</p>
+          <p>${todaySubmission ? 'KPI submitted for today.' : 'Daily KPI pending.'}</p>
         </div>
       </section>
       <section class="launch-grid">
@@ -303,9 +297,9 @@ const kpiView = () => {
     <main class="shell driver-shell">
       <section class="view-head">
         <div class="view-title">
-          <p class="eyebrow">Daily time sheet</p>
+          <p class="eyebrow">StarTrack · KPI</p>
           <h2>Fill KPI</h2>
-          <p>Date and driver details are automatic from your account.</p>
+          <p>Date and driver pre-filled from your account.</p>
         </div>
       </section>
       <form class="form panel panel-pad" data-form="kpi">
@@ -474,8 +468,8 @@ const supervisorDashboard = () => {
     <main class="shell">
       <section class="view-head">
         <div class="view-title">
-          <p class="eyebrow">Supervisor dashboard</p>
-          <h2>Daily depot metrics</h2>
+          <p class="eyebrow">StarTrack · Supervisor</p>
+          <h2>Daily metrics</h2>
           <p>Signed in as ${h(formatName(user))}. Live view refreshed ${h(lastUpdated)}.</p>
         </div>
         <div class="toolbar">
@@ -656,9 +650,9 @@ const adminView = () => `
   <main class="shell">
     <section class="view-head">
       <div class="view-title">
-        <p class="eyebrow">Admin console</p>
+        <p class="eyebrow">StarTrack · Admin</p>
         <h2>System management</h2>
-        <p>Users, routes, submissions, exports and general settings.</p>
+        <p>Users, routes, submissions and settings.</p>
       </div>
       <div class="toolbar">
         <button class="ghost-button" data-action="export-json">Export JSON</button>
@@ -966,7 +960,7 @@ const downloadFile = (filename, content, type) => {
   URL.revokeObjectURL(url)
 }
 
-const exportJson = () => downloadFile('startrack-export.json', JSON.stringify(state.data, null, 2), 'application/json')
+const exportJson = () => downloadFile(`startrack-export-${todayISO()}.json`, JSON.stringify(state.data, null, 2), 'application/json')
 
 const exportCsv = () => {
   const rows = [['date', 'driver', 'route', 'hours', 'stops', 'parcels', 'status']]
@@ -997,6 +991,7 @@ app.addEventListener('click', async (event) => {
   const action = target.dataset.action
 
   if (action === 'home') { event.preventDefault(); setView('home') }
+  if (action === 'admin-access') setView('login', { loginRole: 'supervisor', intent: '', loginError: '' })
   if (action === 'logout') await signOut()
   if (action === 'login-driver') setView('login', { loginRole: 'driver', intent: '', loginError: '' })
   if (action === 'login-supervisor') setView('login', { loginRole: 'supervisor', intent: '', loginError: '' })
