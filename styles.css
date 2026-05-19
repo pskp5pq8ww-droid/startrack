@@ -7,8 +7,8 @@
   --surface: #ffffff;
   --soft: #f8fafc;
   --panel: #f1f5f9;
-  --blue: #0f4c81;
-  --blue-2: #163b5c;
+  --blue: #009AD5;
+  --blue-2: #003A62;
   --red: #c2413b;
   --green: #157f54;
   --amber: #a16207;
@@ -69,6 +69,12 @@ button {
   min-width: 0;
   color: var(--ink);
   text-decoration: none;
+}
+
+.brand-logo {
+  height: 32px;
+  width: auto;
+  object-fit: contain;
 }
 
 .brand-mark {
@@ -219,7 +225,7 @@ h1 {
 
 .launch-button:hover,
 .launch-button:focus-visible {
-  border-color: rgba(15, 76, 129, 0.34);
+  border-color: rgba(0, 154, 213, 0.34);
   transform: translateY(-1px);
 }
 
@@ -365,7 +371,7 @@ h1 {
 .select:focus,
 .textarea:focus {
   border-color: var(--blue);
-  box-shadow: 0 0 0 3px rgba(15, 76, 129, 0.14);
+  box-shadow: 0 0 0 3px rgba(0, 154, 213, 0.14);
 }
 
 .input[readonly] {
