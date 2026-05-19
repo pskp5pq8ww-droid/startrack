@@ -8,6 +8,8 @@ const ROOT = __dirname
 const STORAGE_DIR = path.join(ROOT, 'storage')
 const KPIS_DIR = path.join(STORAGE_DIR, 'kpis')
 const DASHBOARD_DIR = path.join(STORAGE_DIR, 'dashboard')
+const ALERTS_FILE = path.join(STORAGE_DIR, 'alerts.json')
+const SICK_LEAVE_FILE = path.join(STORAGE_DIR, 'sick-leave.json')
 
 const BRISBANE_TOLLS = [
   { id: 'gateway', name: 'Gateway Motorway / Gateway Bridge', price: 0 },
@@ -170,6 +172,9 @@ function initStorage() {
 
   const holidaysFile = path.join(STORAGE_DIR, 'holidays.json')
   if (!fs.existsSync(holidaysFile)) writeJSON(holidaysFile, [])
+
+  if (!fs.existsSync(ALERTS_FILE)) writeJSON(ALERTS_FILE, [])
+  if (!fs.existsSync(SICK_LEAVE_FILE)) writeJSON(SICK_LEAVE_FILE, [])
 }
 
 function parseBody(req) {
@@ -391,10 +396,58 @@ http.createServer(async (req, res) => {
     return respond(res, 200, snapshot)
   }
 
+  // GET /api/alerts
+  if (pathname === '/api/alerts' && req.method === 'GET') {
+    if (!auth || !['supervisor', 'admin'].includes(auth.role)) return respond(res, 403, { error: 'Forbidden' })
+    return respond(res, 200, readJSON(ALERTS_FILE, []))
+  }
+
+  // POST /api/alerts
+  if (pathname === '/api/alerts' && req.method === 'POST') {
+    if (!auth) return respond(res, 401, { error: 'Unauthorized' })
+    const alerts = readJSON(ALERTS_FILE, [])
+    const id = `alert_${crypto.randomBytes(3).toString('hex')}_${Date.now().toString(36)}`
+    const alert = { id, ...body, createdAt: new Date().toISOString() }
+    alerts.unshift(alert)
+    writeJSON(ALERTS_FILE, alerts)
+    return respond(res, 201, alert)
+  }
+
+  // PUT /api/alerts/:id
+  const alertIdMatch = pathname.match(/^\/api\/alerts\/([^/]+)$/)
+  if (alertIdMatch && req.method === 'PUT') {
+    if (!auth || !['supervisor', 'admin'].includes(auth.role)) return respond(res, 403, { error: 'Forbidden' })
+    const alerts = readJSON(ALERTS_FILE, [])
+    const idx = alerts.findIndex(a => a.id === alertIdMatch[1])
+    if (idx === -1) return respond(res, 404, { error: 'Not found' })
+    alerts[idx] = { ...alerts[idx], ...body, reviewedBy: auth.id, reviewedAt: new Date().toISOString() }
+    writeJSON(ALERTS_FILE, alerts)
+    return respond(res, 200, alerts[idx])
+  }
+
+  // GET /api/sick-leave
+  if (pathname === '/api/sick-leave' && req.method === 'GET') {
+    if (!auth) return respond(res, 401, { error: 'Unauthorized' })
+    const all = readJSON(SICK_LEAVE_FILE, [])
+    if (auth.role === 'driver') return respond(res, 200, all.filter(s => s.driverId === auth.id))
+    return respond(res, 200, all)
+  }
+
+  // POST /api/sick-leave
+  if (pathname === '/api/sick-leave' && req.method === 'POST') {
+    if (!auth || auth.role !== 'driver') return respond(res, 403, { error: 'Forbidden' })
+    const all = readJSON(SICK_LEAVE_FILE, [])
+    const id = `sl_${crypto.randomBytes(3).toString('hex')}_${Date.now().toString(36)}`
+    const entry = { id, driverId: auth.id, ...body, status: 'pending', createdAt: new Date().toISOString() }
+    all.unshift(entry)
+    writeJSON(SICK_LEAVE_FILE, all)
+    return respond(res, 201, entry)
+  }
+
   // POST /api/admin/reset
   if (pathname === '/api/admin/reset' && req.method === 'POST') {
     if (!auth || auth.role !== 'admin') return respond(res, 403, { error: 'Forbidden' })
-    const files = ['users.json', 'settings.json', 'routes.json', 'holidays.json']
+    const files = ['users.json', 'settings.json', 'routes.json', 'holidays.json', 'alerts.json', 'sick-leave.json']
     for (const f of files) {
       const fp = path.join(STORAGE_DIR, f)
       if (fs.existsSync(fp)) fs.unlinkSync(fp)
