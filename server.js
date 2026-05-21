@@ -175,6 +175,30 @@ function initStorage() {
 
   if (!fs.existsSync(ALERTS_FILE)) writeJSON(ALERTS_FILE, [])
   if (!fs.existsSync(SICK_LEAVE_FILE)) writeJSON(SICK_LEAVE_FILE, [])
+
+  // STRESS® pilot routes (additive — only adds what's missing, never removes)
+  const stressPilot = []
+  for (let i = 301; i <= 316; i++) stressPilot.push({ n: String(i), row: 0, col: i - 301 })
+  for (let i = 201; i <= 216; i++) stressPilot.push({ n: String(i), row: 1, col: i - 201 })
+  const currentRoutes = readJSON(routesFile, [])
+  const haveNumbers = new Set(currentRoutes.map(r => r.routeNumber))
+  let dirty = false
+  for (const p of stressPilot) {
+    if (!haveNumbers.has(p.n)) {
+      currentRoutes.push({
+        id: `route_${p.n}`,
+        routeNumber: p.n,
+        depot: 'BNPF Depot',
+        zone: p.row === 0 ? 'Central-North' : 'Central-South',
+        status: 'active',
+        stressSection: 'pilot-central',
+        gridRow: p.row,
+        gridCol: p.col,
+      })
+      dirty = true
+    }
+  }
+  if (dirty) writeJSON(routesFile, currentRoutes)
 }
 
 function parseBody(req) {
