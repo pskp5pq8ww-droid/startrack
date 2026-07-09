@@ -142,4 +142,4 @@ In the browser, open the supervisor dashboard, switch the parcels chart between 
 
 ## Deployment
 
-The repo is deployed to Hostinger via `package.json` → `npm start` → `node server.js`. Static assets are served with `Cache-Control: no-store` for `.css`/`.js`. CSS and JS are versioned in `index.html` (`styles.v7.css`, `app.v5.js`) to bypass the Hostinger CDN cache when shipping updates.
+The repo is deployed to Hostinger via `package.json` → `npm start` → `node server.js`. Static assets are served with `Cache-Control: no-store` for `.css`/`.js`. CSS and JS are versioned in `index.html` (`styles.v8.css`, `app.v7.js`) to bypass the Hostinger CDN cache when shipping updates.
