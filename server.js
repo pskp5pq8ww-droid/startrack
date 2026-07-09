@@ -153,7 +153,7 @@ function initStorage() {
 
   const settingsFile = path.join(STORAGE_DIR, 'settings.json')
   if (!fs.existsSync(settingsFile)) {
-    writeJSON(settingsFile, { depotName: 'BNPF Depot', systemName: 'StarTrack', cutOffTime: '18:30', defaultBreakMinutes: 60, tolls: BRISBANE_TOLLS })
+    writeJSON(settingsFile, { depotName: 'BNPF Depot', systemName: 'DepotOS', cutOffTime: '18:30', defaultBreakMinutes: 60, tolls: BRISBANE_TOLLS })
   } else {
     const settings = readJSON(settingsFile, {})
     if (!Array.isArray(settings.tolls)) writeJSON(settingsFile, { ...settings, tolls: BRISBANE_TOLLS })
@@ -525,4 +525,4 @@ http.createServer(async (req, res) => {
   }
 
   return respond(res, 404, { error: 'Not found' })
-}).listen(PORT, () => console.log(`StarTrack KPI server running on port ${PORT}`))
+}).listen(PORT, () => console.log(`DepotOS KPI server running on port ${PORT}`))

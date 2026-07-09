@@ -1,4 +1,4 @@
-# StarTrack KPI System
+# DepotOS KPI System
 
 Internal depot web-app for drivers, supervisors, and admins. Node.js HTTP server with file-based JSON storage — no external dependencies.
 
@@ -142,4 +142,4 @@ In the browser, open the supervisor dashboard, switch the parcels chart between 
 
 ## Deployment
 
-The repo is deployed to Hostinger via `package.json` → `npm start` → `node server.js`. Static assets are served with `Cache-Control: no-store` for `.css`/`.js`. CSS and JS are versioned in `index.html` (`styles.v6.css`, `app.v3.js`) to bypass the Hostinger CDN cache when shipping updates.
+The repo is deployed to Hostinger via `package.json` → `npm start` → `node server.js`. Static assets are served with `Cache-Control: no-store` for `.css`/`.js`. CSS and JS are versioned in `index.html` (`styles.v7.css`, `app.v5.js`) to bypass the Hostinger CDN cache when shipping updates.
